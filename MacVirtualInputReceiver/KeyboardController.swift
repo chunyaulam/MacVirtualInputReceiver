@@ -13,7 +13,25 @@ struct KeyboardPacket {
 class KeyboardController {
     private let keyUpAction: UInt8 = 0x00
     private let keyDownAction: UInt8 = 0x01
+    private let unicodeTextChannel: UInt8 = 0x03
+    private let controlKeyChannel: UInt8 = 0x04
     private var pressedKeycodes = Set<UInt16>()
+    
+    func handleIncomingKeyboardPacket(data: Data) {
+        guard let channel = data.first else {
+            print("⌨️ [KeyboardPacket] Empty packet")
+            return
+        }
+        
+        switch channel {
+        case unicodeTextChannel:
+            handleUnicodeTextPacket(data)
+        case controlKeyChannel:
+            handleControlKeyPacket(data)
+        default:
+            print("⌨️ [KeyboardPacket] Unsupported channel:\(channel), bytes:\(data.count)")
+        }
+    }
     
     func processIncomingNetworkData(_ data: Data) {
         guard data.count >= 9 else {
@@ -45,6 +63,84 @@ class KeyboardController {
             keycode: keycode,
             modifiers: data[8]
         )
+    }
+    
+    private func handleUnicodeTextPacket(_ data: Data) {
+        guard AXIsProcessTrusted() else {
+            print("⌨️ [UnicodeText] Blocked: Accessibility permission is not granted")
+            return
+        }
+        
+        let payload = data.dropFirst()
+        guard !payload.isEmpty else {
+            print("⌨️ [UnicodeText] Empty UTF-8 payload")
+            return
+        }
+        
+        guard let string = String(data: payload, encoding: .utf8) else {
+            print("⌨️ [UnicodeText] Invalid UTF-8 payload, bytes:\(payload.count)")
+            return
+        }
+        
+        let utf16CodeUnits = Array(string.utf16)
+        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) else {
+            return
+        }
+        
+        utf16CodeUnits.withUnsafeBufferPointer { buffer in
+            event.keyboardSetUnicodeString(
+                stringLength: buffer.count,
+                unicodeString: buffer.baseAddress
+            )
+        }
+        event.post(tap: .cghidEventTap)
+        
+        print("⌨️ [UnicodeText] inserted characters:\(string.count), utf16Units:\(utf16CodeUnits.count)")
+    }
+    
+    private func handleControlKeyPacket(_ data: Data) {
+        guard AXIsProcessTrusted() else {
+            print("⌨️ [ControlKey] Blocked: Accessibility permission is not granted")
+            return
+        }
+        
+        guard data.count >= 2 else {
+            print("⌨️ [ControlKey] Missing action byte")
+            return
+        }
+        
+        let action = data[1]
+        guard let keycode = controlKeycode(for: action) else {
+            print("⌨️ [ControlKey] Unsupported action:\(action)")
+            return
+        }
+        
+        postControlKey(keycode)
+        print("⌨️ [ControlKey] action:\(action), keycode:\(keycode)")
+    }
+    
+    private func controlKeycode(for action: UInt8) -> CGKeyCode? {
+        switch action {
+        case 1:
+            return 0x33
+        case 2:
+            return 0x24
+        case 3:
+            return 0x30
+        case 4:
+            return 0x35
+        default:
+            return nil
+        }
+    }
+    
+    private func postControlKey(_ keycode: CGKeyCode) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keycode, keyDown: true)
+        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keycode, keyDown: false)
+        
+        keyDown?.post(tap: .cghidEventTap)
+        keyUp?.post(tap: .cghidEventTap)
     }
     
     private func postKeyboardEvent(_ packet: KeyboardPacket) {

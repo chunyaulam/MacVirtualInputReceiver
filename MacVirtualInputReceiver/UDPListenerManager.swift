@@ -64,6 +64,11 @@ class UDPListenerManager {
     }
     
     private func handleReceivedData(_ data: Data, from connection: NWConnection) {
+        if isIncomingKeyboardPacket(data) {
+            keyboardController.handleIncomingKeyboardPacket(data: data)
+            return
+        }
+        
         guard data.count > packetTypeOffset else {
             let message = String(data: data, encoding: .utf8)
             print("📩 [Unknown] FROM \(connection.endpoint) -> \(message ?? "Missing packet type")")
@@ -90,5 +95,18 @@ class UDPListenerManager {
     
     private func handleGamepadData(_ data: Data, from connection: NWConnection) {
         gamepadController.processIncomingNetworkData(data)
+    }
+    
+    private func isIncomingKeyboardPacket(_ data: Data) -> Bool {
+        guard let channel = data.first else { return false }
+        
+        switch channel {
+        case 0x03:
+            return data.count <= packetTypeOffset || data[packetTypeOffset] != 0x03
+        case 0x04:
+            return data.count >= 2
+        default:
+            return false
+        }
     }
 }
