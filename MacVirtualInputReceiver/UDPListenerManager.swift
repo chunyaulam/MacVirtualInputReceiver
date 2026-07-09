@@ -5,6 +5,9 @@ class UDPListenerManager {
     var listener: NWListener?
     let queue = DispatchQueue(label: "com.example.udp.listener")
     private let mouseController = MouseController()
+    private let keyboardController = KeyboardController()
+    private let gamepadController = GamepadController()
+    private let packetTypeOffset = 4
 
     func startListening(port: UInt16) {
         do {
@@ -61,11 +64,31 @@ class UDPListenerManager {
     }
     
     private func handleReceivedData(_ data: Data, from connection: NWConnection) {
-        if data.count == 16 {
-            mouseController.processIncomingNetworkData(data)
-        } else {
+        guard data.count > packetTypeOffset else {
             let message = String(data: data, encoding: .utf8)
-            print("📩 [String] FROM \(connection.endpoint) -> \(message ?? "EMPTY DATA")")
+            print("📩 [Unknown] FROM \(connection.endpoint) -> \(message ?? "Missing packet type")")
+            return
         }
+        
+        let packetType = data[packetTypeOffset]
+        
+        switch packetType {
+        case 0x01:
+            mouseController.processIncomingNetworkData(data)
+        case 0x02:
+            handleKeyboardData(data, from: connection)
+        case 0x03:
+            handleGamepadData(data, from: connection)
+        default:
+            print("📩 [Unknown] FROM \(connection.endpoint) -> packetType:\(packetType), bytes:\(data.count)")
+        }
+    }
+    
+    private func handleKeyboardData(_ data: Data, from connection: NWConnection) {
+        keyboardController.processIncomingNetworkData(data)
+    }
+    
+    private func handleGamepadData(_ data: Data, from connection: NWConnection) {
+        gamepadController.processIncomingNetworkData(data)
     }
 }

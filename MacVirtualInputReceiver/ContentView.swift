@@ -1,92 +1,81 @@
 import SwiftUI
-import Darwin
 
 struct ContentView: View {
-    @State private var udpManager = UDPListenerManager()
-    @State private var isServerRunning = false
-    @State private var serverAddress: String?
-    
-    private let serverPort: UInt16 = 8567
+    @ObservedObject var serverController: ServerController
     
     var body: some View {
-        VStack(spacing: 20) {
-            
-            Button(isServerRunning ? "Stop Server" : "Start Server") {
-                toggleServer()
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: serverController.isServerRunning ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundStyle(serverController.isServerRunning ? .green : .secondary)
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(serverController.isServerRunning ? "Server Running" : "Server Stopped")
+                        .font(.headline)
+                    
+                    if let serverAddress = serverController.serverAddress {
+                        Text(serverAddress)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    } else {
+                        Text("UDP listener is not active")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .tint(isServerRunning ? .red : .accentColor)
             
-            if let serverAddress {
-                Text("Server running on \(serverAddress)")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+            Divider()
+            
+            HStack(spacing: 10) {
+                Image(systemName: serverController.isAccessibilityTrusted ? "keyboard.badge.ellipsis" : "exclamationmark.triangle.fill")
+                    .foregroundColor(serverController.isAccessibilityTrusted ? .secondary : .orange)
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(serverController.isAccessibilityTrusted ? "Keyboard Permission Ready" : "Accessibility Permission Needed")
+                        .font(.subheadline)
+                    
+                    if !serverController.isAccessibilityTrusted {
+                        Text("Required for posting keyboard and mouse events")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                
+                Spacer()
+                
+                if !serverController.isAccessibilityTrusted {
+                    Button("Allow") {
+                        serverController.requestAccessibilityPermission()
+                    }
+                }
+            }
+            
+            Divider()
+            
+            HStack {
+                Button(serverController.isServerRunning ? "Stop Server" : "Start Server") {
+                    serverController.toggleServer()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(serverController.isServerRunning ? .red : .accentColor)
+                
+                Spacer()
+                
+                Button("Quit") {
+                    NSApp.terminate(nil)
+                }
             }
         }
         .padding()
-        .frame(width: 360, height: 220)
-    }
-    
-    private func toggleServer() {
-        isServerRunning.toggle()
-        
-        if isServerRunning {
-            udpManager.startListening(port: serverPort)
-            serverAddress = "\(localIPAddress() ?? "Unknown IP"):\(serverPort)"
-        } else {
-            udpManager.stopListening()
-            serverAddress = nil
+        .frame(width: 300)
+        .onAppear {
+            serverController.refreshAccessibilityTrust()
         }
-    }
-    
-    private func localIPAddress() -> String? {
-        var interfaces: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&interfaces) == 0 else { return nil }
-        defer { freeifaddrs(interfaces) }
-        
-        var fallbackAddress: String?
-        var pointer = interfaces
-        
-        while pointer != nil {
-            guard let interface = pointer?.pointee else {
-                pointer = pointer?.pointee.ifa_next
-                continue
-            }
-            
-            defer { pointer = interface.ifa_next }
-            
-            guard interface.ifa_addr.pointee.sa_family == UInt8(AF_INET),
-                  let name = String(validatingUTF8: interface.ifa_name),
-                  name != "lo0" else {
-                continue
-            }
-            
-            var address = interface.ifa_addr.pointee
-            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            let result = getnameinfo(
-                &address,
-                socklen_t(interface.ifa_addr.pointee.sa_len),
-                &hostname,
-                socklen_t(hostname.count),
-                nil,
-                0,
-                NI_NUMERICHOST
-            )
-            
-            guard result == 0, let ipAddress = String(validatingUTF8: hostname) else { continue }
-            
-            if name == "en0" || name == "en1" {
-                return ipAddress
-            }
-            
-            fallbackAddress = fallbackAddress ?? ipAddress
-        }
-        
-        return fallbackAddress
     }
 }
 
 #Preview {
-    ContentView()
+    ContentView(serverController: ServerController(autoStart: false))
 }
