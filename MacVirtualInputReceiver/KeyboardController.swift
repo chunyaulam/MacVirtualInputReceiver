@@ -10,16 +10,48 @@ struct KeyboardPacket {
     let modifiers: UInt8
 }
 
-class KeyboardController {
+final class KeyboardController {
     private let keyUpAction: UInt8 = 0x00
     private let keyDownAction: UInt8 = 0x01
     private let unicodeTextChannel: UInt8 = 0x03
     private let controlKeyChannel: UInt8 = 0x04
     private var pressedKeycodes = Set<UInt16>()
+    private var processedPacketCount = 0
+    private let logEveryPacketCount = 60
+    
+    private var cachedAccessibilityTrusted: Bool = AXIsProcessTrusted()
+    private var lastAccessibilityCheck: Date = Date()
+    
+    var isAccessibilityGranted: Bool {
+        if cachedAccessibilityTrusted { return true }
+        if Date().timeIntervalSince(lastAccessibilityCheck) > 1.0 {
+            cachedAccessibilityTrusted = AXIsProcessTrusted()
+            lastAccessibilityCheck = Date()
+        }
+        return cachedAccessibilityTrusted
+    }
+    
+    func refreshAccessibilityTrust() {
+        cachedAccessibilityTrusted = AXIsProcessTrusted()
+        lastAccessibilityCheck = Date()
+    }
+    
+    func releaseAllKeys() {
+        guard !pressedKeycodes.isEmpty else { return }
+        let source = CGEventSource(stateID: .combinedSessionState)
+        for keycode in pressedKeycodes {
+            let keyUp = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: CGKeyCode(keycode),
+                keyDown: false
+            )
+            keyUp?.post(tap: .cghidEventTap)
+        }
+        pressedKeycodes.removeAll()
+    }
     
     func handleIncomingKeyboardPacket(data: Data) {
         guard let channel = data.first else {
-            print("⌨️ [KeyboardPacket] Empty packet")
             return
         }
         
@@ -29,16 +61,12 @@ class KeyboardController {
         case controlKeyChannel:
             handleControlKeyPacket(data)
         default:
-            print("⌨️ [KeyboardPacket] Unsupported channel:\(channel), bytes:\(data.count)")
+            break
         }
     }
     
     func processIncomingNetworkData(_ data: Data) {
-        guard data.count >= 9 else {
-            print("⌨️ [KeyboardPacket] Invalid length:\(data.count)")
-            return
-        }
-        
+        guard data.count >= 9 else { return }
         guard let packet = unpackKeyboardPacket(from: data) else { return }
         guard packet.packetType == 0x02 else { return }
         
@@ -46,7 +74,7 @@ class KeyboardController {
         case keyUpAction, keyDownAction:
             postKeyboardEvent(packet)
         default:
-            print("⌨️ [KeyboardPacket] Unknown action:\(packet.action), keycode:\(packet.keycode)")
+            break
         }
     }
     
@@ -56,67 +84,52 @@ class KeyboardController {
             return nil
         }
         
+        let start = data.startIndex
         return KeyboardPacket(
             timestamp: timestamp,
-            packetType: data[4],
-            action: data[5],
+            packetType: data[start + 4],
+            action: data[start + 5],
             keycode: keycode,
-            modifiers: data[8]
+            modifiers: data[start + 8]
         )
     }
     
     private func handleUnicodeTextPacket(_ data: Data) {
-        guard AXIsProcessTrusted() else {
-            print("⌨️ [UnicodeText] Blocked: Accessibility permission is not granted")
-            return
-        }
+        guard isAccessibilityGranted else { return }
         
         let payload = data.dropFirst()
-        guard !payload.isEmpty else {
-            print("⌨️ [UnicodeText] Empty UTF-8 payload")
-            return
-        }
-        
-        guard let string = String(data: payload, encoding: .utf8) else {
-            print("⌨️ [UnicodeText] Invalid UTF-8 payload, bytes:\(payload.count)")
+        guard !payload.isEmpty,
+              let string = String(data: payload, encoding: .utf8) else {
             return
         }
         
         let utf16CodeUnits = Array(string.utf16)
-        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) else {
-            return
+        let maxChunkSize = 20
+        for i in stride(from: 0, to: utf16CodeUnits.count, by: maxChunkSize) {
+            let end = min(i + maxChunkSize, utf16CodeUnits.count)
+            let chunk = Array(utf16CodeUnits[i..<end])
+            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) else {
+                continue
+            }
+            
+            chunk.withUnsafeBufferPointer { buffer in
+                event.keyboardSetUnicodeString(
+                    stringLength: buffer.count,
+                    unicodeString: buffer.baseAddress
+                )
+            }
+            event.post(tap: .cghidEventTap)
         }
-        
-        utf16CodeUnits.withUnsafeBufferPointer { buffer in
-            event.keyboardSetUnicodeString(
-                stringLength: buffer.count,
-                unicodeString: buffer.baseAddress
-            )
-        }
-        event.post(tap: .cghidEventTap)
-        
-        print("⌨️ [UnicodeText] inserted characters:\(string.count), utf16Units:\(utf16CodeUnits.count)")
     }
     
     private func handleControlKeyPacket(_ data: Data) {
-        guard AXIsProcessTrusted() else {
-            print("⌨️ [ControlKey] Blocked: Accessibility permission is not granted")
-            return
-        }
+        guard isAccessibilityGranted else { return }
+        guard data.count >= 2 else { return }
         
-        guard data.count >= 2 else {
-            print("⌨️ [ControlKey] Missing action byte")
-            return
-        }
-        
-        let action = data[1]
-        guard let keycode = controlKeycode(for: action) else {
-            print("⌨️ [ControlKey] Unsupported action:\(action)")
-            return
-        }
+        let action = data[data.startIndex + 1]
+        guard let keycode = controlKeycode(for: action) else { return }
         
         postControlKey(keycode)
-        print("⌨️ [ControlKey] action:\(action), keycode:\(keycode)")
     }
     
     private func controlKeycode(for action: UInt8) -> CGKeyCode? {
@@ -144,16 +157,13 @@ class KeyboardController {
     }
     
     private func postKeyboardEvent(_ packet: KeyboardPacket) {
-        guard AXIsProcessTrusted() else {
-            print("⌨️ [KeyboardEvent] Blocked: Accessibility permission is not granted")
-            return
-        }
+        guard isAccessibilityGranted else { return }
         
         let isKeyDown = packet.action == keyDownAction
         if isKeyDown {
             pressedKeycodes.insert(packet.keycode)
-        } else if pressedKeycodes.remove(packet.keycode) == nil {
-            print("⌨️ [KeyboardEvent] Warning: received keyUp without previous keyDown for keycode:\(packet.keycode)")
+        } else {
+            pressedKeycodes.remove(packet.keycode)
         }
         
         let source = CGEventSource(stateID: .combinedSessionState)
@@ -166,11 +176,16 @@ class KeyboardController {
         }
         
         event.flags = eventFlags(from: packet.modifiers)
-        event.post(tap: .cgSessionEventTap)
+        event.post(tap: .cghidEventTap)
         
-        let actionName = isKeyDown ? "down" : "up"
-        let latencyMs = packetLatencyMilliseconds(from: packet.timestamp)
-        print("⌨️ [KeyboardEvent] keycode:\(packet.keycode), action:\(actionName), modifiers:\(packet.modifiers), latency:\(latencyMs)ms")
+        processedPacketCount += 1
+        #if DEBUG
+        if processedPacketCount % logEveryPacketCount == 0 {
+            let actionName = isKeyDown ? "down" : "up"
+            let latencyMs = packetLatencyMilliseconds(from: packet.timestamp)
+            print("⌨️ [KeyboardEvent] keycode:\(packet.keycode), action:\(actionName), modifiers:\(packet.modifiers), latency:\(latencyMs)ms")
+        }
+        #endif
     }
     
     private func eventFlags(from modifiers: UInt8) -> CGEventFlags {
@@ -192,18 +207,20 @@ class KeyboardController {
     }
     
     private func readLittleEndianUInt16(from data: Data, offset: Int) -> UInt16? {
-        guard offset + 1 < data.count else { return nil }
+        let start = data.startIndex + offset
+        guard start + 1 < data.endIndex else { return nil }
         
-        return UInt16(data[offset])
-            | (UInt16(data[offset + 1]) << 8)
+        return UInt16(data[start])
+            | (UInt16(data[start + 1]) << 8)
     }
     
     private func readLittleEndianUInt32(from data: Data, offset: Int) -> UInt32? {
-        guard offset + 3 < data.count else { return nil }
+        let start = data.startIndex + offset
+        guard start + 3 < data.endIndex else { return nil }
         
-        return UInt32(data[offset])
-            | (UInt32(data[offset + 1]) << 8)
-            | (UInt32(data[offset + 2]) << 16)
-            | (UInt32(data[offset + 3]) << 24)
+        return UInt32(data[start])
+            | (UInt32(data[start + 1]) << 8)
+            | (UInt32(data[start + 2]) << 16)
+            | (UInt32(data[start + 3]) << 24)
     }
 }

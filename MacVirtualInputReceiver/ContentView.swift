@@ -73,6 +73,14 @@ struct ContentView: View {
         .onAppear {
             serverController.refreshAccessibilityTrust()
         }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if !serverController.isAccessibilityTrusted {
+                    serverController.refreshAccessibilityTrust()
+                }
+            }
+        }
     }
 }
 

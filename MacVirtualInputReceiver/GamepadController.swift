@@ -12,7 +12,7 @@ struct GamepadPacket: Equatable {
     let rightTrigger: UInt8
 }
 
-class GamepadController {
+final class GamepadController {
     private var lastPacket: GamepadPacket?
     private var processedPacketCount = 0
     private let logEveryPacketCount = 30
@@ -35,16 +35,14 @@ class GamepadController {
     ]
     
     func processIncomingNetworkData(_ data: Data) {
-        guard data.count >= 17 else {
-            print("🎮 [GamepadPacket] Invalid length:\(data.count)")
-            return
-        }
-        
+        guard data.count >= 17 else { return }
         guard let packet = unpackGamepadPacket(from: data) else { return }
         guard packet.packetType == 0x03 else { return }
         
         processedPacketCount += 1
+        #if DEBUG
         logPacketIfNeeded(packet)
+        #endif
         lastPacket = packet
     }
     
@@ -58,16 +56,17 @@ class GamepadController {
             return nil
         }
         
+        let start = data.startIndex
         return GamepadPacket(
             timestamp: timestamp,
-            packetType: data[4],
+            packetType: data[start + 4],
             buttons: buttons,
             leftStickX: leftStickX,
             leftStickY: leftStickY,
             rightStickX: rightStickX,
             rightStickY: rightStickY,
-            leftTrigger: data[15],
-            rightTrigger: data[16]
+            leftTrigger: data[start + 15],
+            rightTrigger: data[start + 16]
         )
     }
     
@@ -107,18 +106,20 @@ class GamepadController {
     }
     
     private func readLittleEndianUInt16(from data: Data, offset: Int) -> UInt16? {
-        guard offset + 1 < data.count else { return nil }
+        let start = data.startIndex + offset
+        guard start + 1 < data.endIndex else { return nil }
         
-        return UInt16(data[offset])
-            | (UInt16(data[offset + 1]) << 8)
+        return UInt16(data[start])
+            | (UInt16(data[start + 1]) << 8)
     }
     
     private func readLittleEndianUInt32(from data: Data, offset: Int) -> UInt32? {
-        guard offset + 3 < data.count else { return nil }
+        let start = data.startIndex + offset
+        guard start + 3 < data.endIndex else { return nil }
         
-        return UInt32(data[offset])
-            | (UInt32(data[offset + 1]) << 8)
-            | (UInt32(data[offset + 2]) << 16)
-            | (UInt32(data[offset + 3]) << 24)
+        return UInt32(data[start])
+            | (UInt32(data[start + 1]) << 8)
+            | (UInt32(data[start + 2]) << 16)
+            | (UInt32(data[start + 3]) << 24)
     }
 }

@@ -59,6 +59,7 @@ final class ServerController: ObservableObject {
     
     func refreshAccessibilityTrust() {
         isAccessibilityTrusted = AXIsProcessTrusted()
+        udpManager.refreshAccessibilityTrust()
     }
     
     func requestAccessibilityPermission() {
@@ -82,17 +83,17 @@ final class ServerController: ObservableObject {
             
             defer { pointer = interface.ifa_next }
             
-            guard interface.ifa_addr.pointee.sa_family == UInt8(AF_INET),
+            guard let ifaAddr = interface.ifa_addr,
+                  ifaAddr.pointee.sa_family == UInt8(AF_INET),
                   let name = String(validatingUTF8: interface.ifa_name),
                   name != "lo0" else {
                 continue
             }
             
-            var address = interface.ifa_addr.pointee
             var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             let result = getnameinfo(
-                &address,
-                socklen_t(interface.ifa_addr.pointee.sa_len),
+                ifaAddr,
+                socklen_t(ifaAddr.pointee.sa_len),
                 &hostname,
                 socklen_t(hostname.count),
                 nil,
